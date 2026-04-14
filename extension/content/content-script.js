@@ -7,7 +7,7 @@ import { buildVibeProfile, scoreCandidate } from "../lib/matcher.js";
 
 const PREFIX       = "AML_";
 const VIBE_WINDOW  = 5;
-const QUEUE_AHEAD  = 2;
+const QUEUE_AHEAD  = 3;
 
 let debugMode = false;
 function log(...args) { if (debugMode) console.log(...args); }
@@ -102,7 +102,7 @@ const AM_GENRE_IDS = {
   "jazz":          11,
   "latin":         12,
   "pop":           14,
-  "k-pop":         14,
+  "k-pop":         51,
   "r&b/soul":      15,
   "funk":          15,
   "disco":         17,
@@ -169,8 +169,15 @@ async function resolveISRC(isrc) {
 // --- Core recommendation pipeline ---
 
 async function queueNextVibeTrack() {
-  if (!currentProfile || !pageTokens || working) return;
+  if (!currentProfile || !pageTokens || working) {
+    if (working)          log("[AML] Recommendation skipped — previous fetch still running");
+    else if (!pageTokens) log("[AML] Recommendation skipped — no page tokens yet");
+    else                  log("[AML] Recommendation skipped — no profile yet");
+    return;
+  }
   working = true;
+  let queued = false;
+  log("[AML] Recommendation starting...");
   lastQueuedAt = Date.now(); // stamp immediately — blocks rapid re-fires even if no winner found
 
   try {
@@ -351,7 +358,7 @@ async function queueNextVibeTrack() {
     // fetch the real first-release-date for each top candidate in parallel, re-score,
     // and pick the first that still passes. Cache results so the second lookup when
     // the track actually plays is an instant hit.
-    const TOP_VERIFY = Math.min(scored.length, 5);
+    const TOP_VERIFY = Math.min(scored.length, scoreThreshold * 5);
     const mbDates = await Promise.all(
       scored.slice(0, TOP_VERIFY).map(c =>
         c.isrc ? getMBFirstRelease(c.isrc).catch(() => null) : Promise.resolve(null)
@@ -375,7 +382,7 @@ async function queueNextVibeTrack() {
       }
     }
     if (!winner) {
-      log("[AML] No candidates passed MB date verification — skipping slot");
+      log("[AML] No candidates passed MB date verification — will retry");
       return;
     }
 
@@ -385,6 +392,7 @@ async function queueNextVibeTrack() {
       profileForScoring.avgBPM ? `${Math.round(profileForScoring.avgBPM)} BPM` : null,
     ].filter(Boolean).join(" | ");
     log(`[AML] Queuing: "${winner.title}" by ${winner.artistName} (score: ${winner.score}) [${filterDesc}]`);
+    queued = true;
     alreadyQueued.add(winner.id);
     const primaryArtist = winner.artistName?.split(/[,&]/)[0].trim().toLowerCase();
     if (primaryArtist) queuedArtists.add(primaryArtist);
@@ -428,6 +436,24 @@ async function queueNextVibeTrack() {
     console.error("[AML] Recommendation error:", err?.message ?? err);
   } finally {
     working = false;
+    if (intercepting) {
+      const ourAhead = upNextList.filter(t => alreadyQueued.has(t.id)).length;
+      if (queued) {
+        // Successfully queued — reset failure counter, fill remaining buffer slots immediately.
+        queueNextVibeTrack._consecutiveFailures = 0;
+        if (ourAhead < QUEUE_AHEAD) setTimeout(() => queueNextVibeTrack(), 300);
+      } else if (ourAhead < QUEUE_AHEAD) {
+        // Failed to queue — retry up to 2 times, then give up until the next track.
+        const failures = (queueNextVibeTrack._consecutiveFailures ?? 0) + 1;
+        queueNextVibeTrack._consecutiveFailures = failures;
+        if (failures <= 2) {
+          setTimeout(() => queueNextVibeTrack(), QUEUE_COOLDOWN_MS + 500);
+        } else {
+          log(`[AML] No candidates after ${failures} attempts — waiting for next track`);
+          queueNextVibeTrack._consecutiveFailures = 0;
+        }
+      }
+    }
   }
 }
 
@@ -471,6 +497,9 @@ function evictStaleQueuedTracks() {
 
 async function onNowPlayingChanged(track) {
   if (!track) return;
+
+  // New track = fresh start for the retry counter.
+  queueNextVibeTrack._consecutiveFailures = 0;
 
   // Look up genres from Apple Music catalog — MusicKit doesn't always expose them
   let genres = track.genreNames ?? [];
@@ -529,9 +558,7 @@ async function onNowPlayingChanged(track) {
       // MusicBrainz says 1987. We always prefer MB when available.
       if (mbDate && mbDate !== track.releaseDate) {
         enriched.releaseDate = mbDate;
-        if (!knownMBDate) {
-          log(`[AML] MusicBrainz corrected release date for "${track.title}": ${track.releaseDate} → ${mbDate}`);
-        }
+        // (silent — profile correction, no need to surface this to console)
       } else if (mbDate) {
         enriched.releaseDate = mbDate;
       }
@@ -545,9 +572,11 @@ async function onNowPlayingChanged(track) {
       enrichmentPending = false;
       enrichmentUntil   = 0;
       // QUEUE_CHANGED may have fired during the enrichment window and been suppressed.
-      // Kick off a recommendation now if we still need one.
+      // Only kick off a recommendation if nothing is already running — if working is true,
+      // the in-flight call's finally block will handle filling remaining slots.
       const ourAhead = upNextList.filter(t => alreadyQueued.has(t.id)).length;
-      if (intercepting && ourAhead < QUEUE_AHEAD) queueNextVibeTrack();
+      log(`[AML] Enrichment complete for "${track.title}" — BPM: ${deezer?.bpm ?? "—"} | ${ourAhead}/${QUEUE_AHEAD} AML tracks ahead`);
+      if (intercepting && ourAhead < QUEUE_AHEAD && !working) queueNextVibeTrack();
     });
   } else {
     enrichmentPending = false;
@@ -571,27 +600,41 @@ async function onNowPlayingChanged(track) {
 
 async function onQueueChanged(items, position) {
   if (!intercepting) return;
-  if (items.length <= position + QUEUE_AHEAD) return;
+  if (items.length <= position + QUEUE_AHEAD) {
+    log(`[AML] Queue changed — only ${items.length - position - 1} tracks ahead, waiting for queue to fill`);
+    return;
+  }
 
   // Count how many of our tracks are already sitting anywhere ahead in the queue.
   // playNext() appends near the end of Apple's preloaded batch, not at position+1,
   // so we must scan the full remaining queue — not just the next 2 slots.
   const remaining = items.slice(position + 1);
   const ourTracksAhead = remaining.filter(t => t?.id && alreadyQueued.has(t.id)).length;
-  if (ourTracksAhead >= QUEUE_AHEAD) return;
+  if (ourTracksAhead >= QUEUE_AHEAD) {
+    log(`[AML] Queue full — ${ourTracksAhead} AML tracks already ahead`);
+    return;
+  }
 
   // Suppress rapid re-fires caused by our own playNext() call mutating the queue.
   // queueItemsDidChange fires multiple times per playNext(); the cooldown absorbs them.
-  if (Date.now() - lastQueuedAt < QUEUE_COOLDOWN_MS) return;
+  const cooldownRemaining = QUEUE_COOLDOWN_MS - (Date.now() - lastQueuedAt);
+  if (cooldownRemaining > 0) {
+    log(`[AML] Cooldown — ${Math.round(cooldownRemaining / 1000)}s remaining`);
+    return;
+  }
 
   // Wait for Deezer + MusicBrainz enrichment before recommending.
   // enrichmentPending is the primary gate; enrichmentUntil is a safety fallback.
   // If Safari suspended mid-enrichment and the promise never settled, auto-clear here.
   if (enrichmentPending && Date.now() > enrichmentUntil) {
+    log("[AML] Enrichment timeout expired — unblocking");
     enrichmentPending = false;
     enrichmentUntil   = 0;
   }
-  if (enrichmentPending || Date.now() < enrichmentUntil) return;
+  if (enrichmentPending || Date.now() < enrichmentUntil) {
+    log("[AML] Waiting for track enrichment before recommending");
+    return;
+  }
 
   await queueNextVibeTrack();
 }
@@ -604,12 +647,26 @@ async function onQueueChanged(items, position) {
 if (!window.__AML_CS_INIT__) {
 window.__AML_CS_INIT__ = true;
 
+// Clear any stale auth status from a prior session so the popup shows a loading
+// state rather than falsely reporting 'ok' before tokens arrive.
+chrome.storage.local.remove("authStatus");
+
+// If tokens never arrive within 10s, the user isn't signed in to Apple Music in Safari.
+setTimeout(() => {
+  if (!pageTokens) chrome.storage.local.set({ authStatus: "not_signed_in" });
+}, 10000);
+
 window.addEventListener("message", e => {
   if (e.source !== window || !e.data?.type?.startsWith(PREFIX)) return;
 
   switch (e.data.type) {
     case `${PREFIX}TOKENS`:
       pageTokens = { dev: e.data.dev, user: e.data.user, storefront: e.data.storefront };
+      chrome.storage.local.set({
+        authStatus: e.data.user        ? "ok"
+                  : e.data.isAuthorized ? "no_subscription"
+                  :                       "not_signed_in",
+      });
       break;
     case `${PREFIX}NOW_PLAYING_CHANGED`:
       if (e.data.track) onNowPlayingChanged(e.data.track);
@@ -659,8 +716,6 @@ function applyOverrides(newOverrides) {
   // were added. Old values persisted in storage would otherwise break era scoring.
   if (newOverrides.forcedDecade === "pre1990") newOverrides.forcedDecade = "pre1960";
 
-  // scoreThreshold is no longer a user-facing control — ignore any stale stored value.
-  delete newOverrides.scoreThreshold;
 
   const prev    = userOverrides.pinnedArtist;
   const prevKey = `${userOverrides.bpmOffset}|${userOverrides.forcedDecade}|${userOverrides.forcedGenre}|${userOverrides.scoreThreshold}|${userOverrides.pinnedArtist}`;
@@ -686,14 +741,16 @@ function applyOverrides(newOverrides) {
     // upNextList is intentionally left as-is — preserved tracks stay visible in popup.
     saveUpNext();
     lastQueuedAt = 0;
+    const THRESHOLD_LABELS = { 1: "Very Loose", 2: "Loose", 3: "Balanced", 4: "Snug", 5: "Strict", 6: "Very Strict" };
+    const threshold = userOverrides.scoreThreshold ?? 3;
     const desc = [
-      userOverrides.forcedGenre   ? `Genre: ${userOverrides.forcedGenre}` : "Genre: Auto",
-      userOverrides.forcedDecade  ? `Era: ${userOverrides.forcedDecade}s` : "Era: Auto",
-      userOverrides.bpmOffset     ? `BPM offset: ${userOverrides.bpmOffset > 0 ? "+" : ""}${userOverrides.bpmOffset}` : null,
-      userOverrides.scoreThreshold >= 4 ? "Strict" : userOverrides.scoreThreshold <= 1 ? "Loose" : null,
-      userOverrides.pinnedArtist  ? `Seed: ${userOverrides.pinnedArtist}` : null,
+      userOverrides.forcedGenre  ? `Genre: ${userOverrides.forcedGenre}` : "Genre: Auto",
+      userOverrides.forcedDecade ? `Era: ${userOverrides.forcedDecade}s` : "Era: Auto",
+      userOverrides.bpmOffset    ? `BPM offset: ${userOverrides.bpmOffset > 0 ? "+" : ""}${userOverrides.bpmOffset}` : null,
+      `Match: ${THRESHOLD_LABELS[threshold] ?? threshold}`,
+      userOverrides.pinnedArtist ? `Seed: ${userOverrides.pinnedArtist}` : null,
     ].filter(Boolean).join(" | ");
-    log(`[AML] Filters → ${desc || "all Auto"}`);
+    log(`[AML] Filters → ${desc}`);
   }
 
   if (recentTracks.length > 0) {

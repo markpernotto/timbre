@@ -75,6 +75,15 @@
     </div>
 
     <div class="control">
+      <label>Match <span class="hint-inline" id="matchHint"></span></label>
+      <div class="slider-row">
+        <span class="slider-end-label">Loose</span>
+        <input type="range" id="matchSlider" min="1" max="6" step="1" value="3">
+        <span class="slider-end-label">Strict</span>
+      </div>
+    </div>
+
+    <div class="control">
       <label>Genre <span class="hint-inline" id="genreAutoHint">— following detected</span></label>
       <select id="genreSelect">
         <option value="">Auto</option>

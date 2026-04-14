@@ -46,13 +46,14 @@
       "size" : "512x512"
     },
     {
+      "filename" : "icon-1024.png",
       "idiom" : "mac",
       "scale" : "2x",
       "size" : "512x512"
     }
   ],
   "info" : {
-    "version" : 1,
-    "author" : "xcode"
+    "author" : "xcode",
+    "version" : 1
   }
 }

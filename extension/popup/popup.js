@@ -5,10 +5,14 @@ const TEMPO_STEP   = 15;  // BPM shift per slower/faster click
 // "pre1960" is a sentinel — scored as "any track before 1960", no specific decade required
 const DECADES      = ["pre1960", 1960, 1970, 1980, 1990, 2000, 2010, 2020];
 
+const MATCH_LABELS = { 1: "Very Loose", 2: "Loose", 3: "Balanced", 4: "Snug", 5: "Strict", 6: "Very Strict" };
+const MATCH_DEFAULT = 3;
+
 let currentProfile     = null;
-let overrides          = { bpmOffset: 0, forcedDecade: null, forcedGenre: null, pinnedArtist: null };
+let overrides          = { bpmOffset: 0, forcedDecade: null, forcedGenre: null, pinnedArtist: null, scoreThreshold: MATCH_DEFAULT };
 let rendering          = false; // suppress change events fired by renderProfile()
 let lastOverrideChange = 0;
+let authStatus         = null; // null = unknown, 'ok', 'not_signed_in'
 const OVERRIDE_FLASH_MS = 3000;
 
 // Elements
@@ -25,6 +29,8 @@ const eraForwardBtn    = document.getElementById("eraForwardBtn");
 const eraDisplay       = document.getElementById("eraDisplay");
 const eraAutoHint      = document.getElementById("eraAutoHint");
 const eraHint          = document.getElementById("eraHint");
+const matchSlider      = document.getElementById("matchSlider");
+const matchHint        = document.getElementById("matchHint");
 const genreSelect      = document.getElementById("genreSelect");
 const genreAutoHint    = document.getElementById("genreAutoHint");
 const seedHint         = document.getElementById("seedHint");
@@ -39,14 +45,15 @@ function renderProfile() {
     ? currentProfile.avgBPM + overrides.bpmOffset
     : null;
 
-  const anyOverride = overrides.forcedGenre || overrides.forcedDecade || overrides.bpmOffset !== 0;
+  const threshold   = overrides.scoreThreshold ?? MATCH_DEFAULT;
+  const anyOverride = overrides.forcedGenre || overrides.forcedDecade || overrides.bpmOffset !== 0 || threshold !== MATCH_DEFAULT;
   const vibeHint = document.getElementById("vibeHint");
 
   // Top stats — always show what's actually driving recommendations
   bpmValue.textContent   = effectiveBPM ? `${effectiveBPM}` : "—";
   genreValue.textContent = overrides.forcedGenre ?? currentProfile?.primaryGenre ?? "—";
   const detectedDecadeLabel = !currentProfile?.dominantDecade ? "—"
-    : currentProfile.dominantDecade < 1990 ? "<1960s"
+    : currentProfile.dominantDecade < 1960 ? "<1960s"
     : `${currentProfile.dominantDecade}s`;
   eraValue.textContent   = overrides.forcedDecade
     ? (overrides.forcedDecade === "pre1960" ? "<1960s" : `${overrides.forcedDecade}s`)
@@ -62,6 +69,13 @@ function renderProfile() {
     : currentProfile
       ? "Detected from your recent tracks. Change any control below to take over."
       : "Play a track to start detecting your vibe.";
+
+  // Override hint if not signed in or no subscription
+  if (authStatus === "not_signed_in") {
+    vibeHint.textContent = "Sign in to Apple Music in Safari to use this extension.";
+  } else if (authStatus === "no_subscription") {
+    vibeHint.textContent = "An Apple Music subscription is required to use this extension.";
+  }
 
   // Tempo hint
   if (overrides.bpmOffset !== 0) {
@@ -83,6 +97,12 @@ function renderProfile() {
     eraAutoHint.textContent = "";
     eraHint.textContent = currentProfile?.dominantDecade ? "Detected — click ◀ ▶ to lock" : "";
   }
+
+  // Match slider
+  matchSlider.value = threshold;
+  matchHint.textContent = threshold !== MATCH_DEFAULT
+    ? `— ${MATCH_LABELS[threshold]}`
+    : "";
 
   // Genre select — locked value selected, otherwise show detected genre selected but dim
   genreSelect.value = overrides.forcedGenre ?? "";
@@ -147,6 +167,13 @@ eraForwardBtn.addEventListener("click", () => {
 // Double-click era display to reset
 eraDisplay.addEventListener("dblclick", () => {
   overrides.forcedDecade = null;
+  pushOverrides();
+});
+
+// Match slider
+matchSlider.addEventListener("input", () => {
+  if (rendering) return;
+  overrides.scoreThreshold = Number(matchSlider.value);
   pushOverrides();
 });
 
@@ -215,10 +242,11 @@ debugToggle.addEventListener("change", () => {
 
 // Restore saved overrides + debug mode from storage (overrides are cleared by content script
 // on page load; debugMode persists indefinitely since it's stored separately).
-chrome.storage.local.get(["overrides", "vibeProfile", "debugMode"], result => {
+chrome.storage.local.get(["overrides", "vibeProfile", "debugMode", "authStatus"], result => {
   if (result.overrides)            overrides        = { ...overrides, ...result.overrides };
   if (result.vibeProfile)          currentProfile   = result.vibeProfile;
   if (result.debugMode !== undefined) debugToggle.checked = result.debugMode;
+  if (result.authStatus !== undefined) authStatus   = result.authStatus;
   renderProfile();
 });
 
@@ -228,7 +256,11 @@ chrome.storage.local.get(["overrides", "vibeProfile", "debugMode"], result => {
 let _pollVibeKey   = "";
 let _pollUpNextKey = "";
 setInterval(() => {
-  chrome.storage.local.get(["vibeProfile", "upNextList"], result => {
+  chrome.storage.local.get(["vibeProfile", "upNextList", "authStatus"], result => {
+    if (result.authStatus !== undefined && result.authStatus !== authStatus) {
+      authStatus = result.authStatus;
+      renderProfile();
+    }
     if (result.vibeProfile) {
       const p   = result.vibeProfile;
       const key = `${p.avgBPM}|${p.primaryGenre}|${p.dominantDecade}`;

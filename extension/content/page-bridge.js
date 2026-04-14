@@ -123,10 +123,11 @@
       case `${PREFIX}GET_TOKENS`:
         // Content script requests re-handshake after returning from background.
         window.postMessage({
-          type:       `${PREFIX}TOKENS`,
-          dev:        mk.developerToken,
-          user:       mk.musicUserToken,
-          storefront: mk.storefrontId ?? "us",
+          type:         `${PREFIX}TOKENS`,
+          dev:          mk.developerToken,
+          user:         mk.musicUserToken,
+          storefront:   mk.storefrontId ?? "us",
+          isAuthorized: mk.isAuthorized,
         }, "*");
         break;
     }
@@ -159,10 +160,11 @@
 
     // Send tokens to content script
     window.postMessage({
-      type:        `${PREFIX}TOKENS`,
-      dev:         mk.developerToken,
-      user:        mk.musicUserToken,
-      storefront:  mk.storefrontId ?? "us",
+      type:         `${PREFIX}TOKENS`,
+      dev:          mk.developerToken,
+      user:         mk.musicUserToken,
+      storefront:   mk.storefrontId ?? "us",
+      isAuthorized: mk.isAuthorized,
     }, "*");
 
     // Send current state immediately

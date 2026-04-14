@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Apple Music Lover",
   "version": "0.1.0",
-  "description": "Metadata-driven autoplay for Apple Music. Matches tempo, genre, and era — not popularity. Sends track ISRCs to Deezer and MusicBrainz for BPM, genre, and release date data.",
+  "description": "Smarter autoplay for Apple Music. Keeps your queue going with tracks matched to your tempo, genre, and era.",
 
   "permissions": [
     "storage"

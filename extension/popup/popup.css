@@ -173,6 +173,24 @@ button.secondary { color: var(--text-faint); }
   color: var(--accent);
 }
 
+/* Match slider */
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.slider-end-label {
+  font-size: 10px;
+  color: var(--text-ghost);
+  white-space: nowrap;
+}
+input[type="range"] {
+  flex: 1;
+  height: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 /* Genre select */
 select {
   width: 100%;
