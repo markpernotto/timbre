@@ -35,7 +35,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full breakdown of the recommendatio
 
 ## Contributing
 
-Bug reports and pull requests welcome at [github.com/markpernotto/timbre](https://github.com/markpernotto/timbre).
+Bug reports and pull requests welcome at [github.com/markpernotto/timbresegue](https://github.com/markpernotto/timbresegue).
 
 ## License
 
