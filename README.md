@@ -35,7 +35,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full breakdown of the recommendatio
 
 ## Contributing
 
-Bug reports and pull requests welcome at [github.com/markpernotto/AppleMusicLover](https://github.com/markpernotto/AppleMusicLover).
+Bug reports and pull requests welcome at [github.com/markpernotto/timbre](https://github.com/markpernotto/timbre).
 
 ## License
 
