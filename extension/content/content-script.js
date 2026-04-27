@@ -398,7 +398,7 @@ async function queueNextVibeTrack() {
       searchDeezerByBPMWide(searchMin, searchMax),
       genreSearchTerm ? searchDeezerByBPM(searchMin, searchMax, 50, genreSearchTerm) : Promise.resolve([]),
     ]);
-    log(`[TS] Candidate pool — AM chart: ${chartCandidates.length}, AM search: ${amSearchCandidates.length}, Deezer genre: ${genreCandidates.length}, Deezer BPM: ${bpmCandidates.length}`);
+    log(`[TS] Candidate pool (BPM target ${searchMin}-${searchMax}) — AM chart: ${chartCandidates.length}, AM search: ${amSearchCandidates.length}, Deezer genre: ${genreCandidates.length}, Deezer BPM-search: ${bpmCandidates.length}`);
 
     // When genre is forced, only exclude by track ID (not by artist) — the genre chart
     // has limited artists and artist-exclusion quickly starves the pool.
@@ -408,23 +408,25 @@ async function queueNextVibeTrack() {
 
     profileForScoring.recentArtists = excludedArtists;
 
-    // Up to 5 attempts. When genre is locked, skip artist radio — the current artist's
-    // neighbours are unlikely to match a different genre.
-    const useRadio = !userOverrides.forcedGenre;
+    // Up to 5 attempts. Artist-seeded sources run on the first attempt regardless of
+    // forced-genre state — wrong-genre candidates are dropped by the genre filter
+    // downstream, and when seed + forced genre align (e.g. playing Metal, forced Metal)
+    // similar-artists is the highest-quality source we have.
     for (let attempt = 0; attempt < 5 && !scored.length; attempt++) {
       const seedArtistId = radioSeedQueue.length > 0 ? radioSeedQueue[0] : fallbackSeedId;
 
       let candidates = [...chartCandidates, ...amSearchCandidates, ...genreCandidates, ...bpmCandidates];
-      if (useRadio && attempt === 0 && seedArtistId) {
+      if (attempt === 0 && seedArtistId) {
         // Two parallel artist-seeded sources: radio (Deezer's curated mix) and similar-artists
-        // top tracks (3 related artists × their top 8). Similar-artists gives much stronger
+        // top tracks (5 related artists × their top 10). Similar-artists gives much stronger
         // "new discovery within the genre" signal than radio, which tends to pull hits of the
         // seed artist themselves. Both still get filtered by BPM/era/genre below.
         const [radioTracks, similarTracks] = await Promise.all([
           getDeezerRadio(seedArtistId),
           getDeezerSimilarArtistTracks(seedArtistId, 5, 10),
         ]);
-        log(`[TS] Artist-seeded — radio: ${radioTracks.length}, similar-artist top tracks: ${similarTracks.length}`);
+        const seedName = seedTrack?.artistName ?? "?";
+        log(`[TS] Artist-seeded (seed=${seedName}, deezerId=${seedArtistId}) — radio: ${radioTracks.length}, similar-artist top tracks: ${similarTracks.length}`);
         candidates = [...candidates, ...radioTracks, ...similarTracks];
       }
 
@@ -452,7 +454,7 @@ async function queueNextVibeTrack() {
         } else if (c.isrc) {
           try {
             const track = await resolveISRC(c.isrc);
-            if (track) verified.push({ ...track, artistDeezerId: c.artistDeezerId ?? null });
+            if (track) verified.push({ ...track, artistDeezerId: c.artistDeezerId ?? null, bpm: c.bpm ?? null, gain: c.gain ?? null });
           } catch {
             // skip — transient network failure on this ISRC
           }
@@ -561,10 +563,20 @@ async function queueNextVibeTrack() {
       return;
     }
 
+    // Show the candidate's actual BPM (when known) — not the profile target — so the
+    // log reflects what's actually being queued. Falls back to profile target when the
+    // candidate has no BPM data (most AM-sourced candidates).
+    const candidateBpm = winner.bpm && winner.bpm > 0 ? Math.round(winner.bpm) : null;
+    const targetBpm    = profileForScoring.avgBPM ? Math.round(profileForScoring.avgBPM) : null;
+    const bpmLabel     = candidateBpm ? `${candidateBpm} BPM`
+                       : targetBpm    ? `~${targetBpm} BPM target`
+                       : null;
+    const gainLabel    = winner.gain != null ? `gain ${winner.gain}dB` : null;
     const filterDesc = [
       profileForScoring.primaryGenre ?? "Auto",
       `${profileForScoring.dominantDecade ?? "Auto"}s`,
-      profileForScoring.avgBPM ? `${Math.round(profileForScoring.avgBPM)} BPM` : null,
+      bpmLabel,
+      gainLabel,
     ].filter(Boolean).join(" | ");
     log(`[TS] Queuing: "${winner.title}" by ${winner.artistName} (score: ${winner.score}) [${filterDesc}]`);
     queued = true;
@@ -574,6 +586,7 @@ async function queueNextVibeTrack() {
     upNextList.push({
       id: winner.id, title: winner.title, artistName: winner.artistName, score: winner.score,
       genreNames: winner.genreNames ?? [], releaseDate: winner.releaseDate ?? null, bpm: winner.bpm ?? null,
+      gain: winner.gain ?? null,
     });
     saveUpNext();
 
@@ -737,6 +750,7 @@ async function onNowPlayingChanged(track) {
         enriched.bpm            = deezer.bpm;
         enriched.deezerId       = deezer.deezerId;
         enriched.artistDeezerId = deezer.artistDeezerId;
+        enriched.gain           = deezer.gain ?? null;
       }
       // MusicBrainz first-release-date overrides Apple Music's releaseDate, which
       // returns the remaster year for catalog reissues and poisons era detection.

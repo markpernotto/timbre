@@ -21,6 +21,9 @@ async function getDeezerTrackByISRC(isrc) {
     deezerId:       data.id,
     artistDeezerId: data.artist?.id ?? null,
     isrc:           data.isrc,
+    // ReplayGain in dB — more negative = louder original master. Useful as an "energy"
+    // proxy for future filtering (e.g. "louder Alternative" mode).
+    gain:           data.gain ?? null,
   };
   _deezerCache.set(isrc, result);
   return result;
@@ -31,6 +34,7 @@ async function getDeezerTrackByISRC(isrc) {
 async function getDeezerRadio(artistDeezerId, limit = 25) {
   const res  = await fetch(`${DEEZER_BASE}/artist/${artistDeezerId}/radio?limit=${limit}`);
   const data = await res.json();
+  if (data.error) console.log("[TS metadata] Radio error for artist", artistDeezerId, data.error);
   const raw  = data.data ?? [];
 
   // Fetch full track details for tracks missing ISRC (cap at 8 to limit requests)
@@ -114,8 +118,12 @@ async function searchDeezerByBPMWide(bpmMin, bpmMax, limit = 25) {
 async function getDeezerSimilarArtistTracks(artistDeezerId, artistLimit = 3, tracksPerArtist = 8) {
   const relRes  = await fetch(`${DEEZER_BASE}/artist/${artistDeezerId}/related?limit=${artistLimit}`);
   const relData = await relRes.json();
+  if (relData.error) console.log("[TS metadata] Related-artists error for", artistDeezerId, relData.error);
   const related = relData.data ?? [];
-  if (!related.length) return [];
+  if (!related.length) {
+    console.log("[TS metadata] No related artists for", artistDeezerId, "(raw response:", JSON.stringify(relData).slice(0, 200), ")");
+    return [];
+  }
 
   const topLists = await Promise.all(
     related.map(a =>
